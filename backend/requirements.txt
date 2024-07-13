@@ -1,0 +1,6 @@
+fastapi
+fastapi-mail==1.0.8
+fastapi-utils==0.2.1
+pydantic[dotenv]
+uvicorn[standard]
+pytest

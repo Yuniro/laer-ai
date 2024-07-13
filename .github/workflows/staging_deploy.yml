@@ -1,0 +1,81 @@
+name: AWS Staging Deploy
+
+env:
+  targetFolder: "~/app/staging/"
+
+on:
+  push:
+    branches: [master]
+
+jobs:
+  deploy:
+    name: Deploying
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          ref: ${{ github.event.inputs.name }}
+
+      - name: Use Node.JS 16.x
+        uses: actions/setup-node@v2
+        with:
+          node-version: 16.x
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build
+        run: npm run build
+        env:
+          NODE_OPTIONS: "--max-old-space-size=8192"
+          REACT_APP_BACKEND_BASE_URL: ${{ secrets.STAGING_BACKEND_BASE_URL }}
+
+      - name: configure aws credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: 'us-east-1'
+
+      - name: get runner ip addresses
+        id: ip
+        uses: haythem/public-ip@v1.2
+
+      - name: Whitelist runner ip address
+        run: |
+          aws ec2 authorize-security-group-ingress \
+            --group-id ${{ secrets.AWS_SECURITY_GROUP_ID }} \
+            --protocol tcp \
+            --port 22 \
+            --cidr ${{ steps.ip.outputs.ipv4 }}/32
+
+      - name: Deploy to EC2 instance
+        uses: easingthemes/ssh-deploy@main
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.STAGING_SERVER_SSH_KEY }}
+          ARGS: "-rltgoDzvO --delete"
+          REMOTE_HOST: ${{ secrets.STAGING_REMOTE_HOST }}
+          REMOTE_USER: ${{ secrets.STAGING_REMOTE_USER }}
+          SOURCE: "./"
+          TARGET: ${{ env.targetFolder }}
+          EXCLUDE: "node_modules, .git, .github, .vscode, public, src, .env, ssl, .dockerignore, .eslintrc, .gitignore, .prettierrc, jsconfig.json, Makefile, package*.json, yarn.lock, README.md"
+
+      - name: Run service
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.STAGING_REMOTE_HOST }}
+          username: ${{ secrets.STAGING_REMOTE_USER }}
+          key: ${{ secrets.STAGING_SERVER_SSH_KEY }}
+          timeout: 300s
+          script: |
+            cd ~/app/staging
+            docker-compose -f docker-compose.staging.yml down
+            docker-compose -f docker-compose.staging.yml up -d
+
+      - name: Remove runner ip address
+        run: |
+          aws ec2 revoke-security-group-ingress \
+            --group-id ${{ secrets.AWS_SECURITY_GROUP_ID }} \
+            --protocol tcp \
+            --port 22 \
+            --cidr ${{ steps.ip.outputs.ipv4 }}/32
